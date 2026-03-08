@@ -43,7 +43,7 @@ class CVClassifier:
         return {
             "color_variance": round(color_std, 2),
             "color_diff": round(color_diff, 2),
-            "is_colorful": color_diff > 10,
+            "is_colorful": color_diff > 4,
         }
 
     def _analyze_edges(self, image: np.ndarray) -> dict:
@@ -66,7 +66,7 @@ class CVClassifier:
                     vertical_lines += 1
 
         return {
-            "edge_density": round(edge_density, 4),
+            "edge_density": round(edge_density, 2),
             "vertical_lines": vertical_lines,
             "horizontal_lines": horizontal_lines,
             "has_multiple_columns": vertical_lines > 2,
@@ -134,6 +134,10 @@ class CVClassifier:
             confidence = min(0.95, 0.5 + (score - 0.7) * 1.5)
         else:
             confidence = min(0.95, 0.5 + (0.7 - score) * 1.5)
+
+        # # If classified as ATS but confidence is below 0.80, default to Creative
+        if cv_type == "ATS" and confidence < 0.80:
+            cv_type = "Creative"
 
         return ClassificationResponse(
             filename=Path(file_path).name,
