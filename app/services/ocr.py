@@ -24,7 +24,7 @@ class OCREngine:
     def easyocr_reader(self):
         """Lazy load EasyOCR"""
         if self._easyocr_reader is None:
-            self._easyocr_reader = easyocr.Reader(['en'], gpu=False)
+            self._easyocr_reader = easyocr.Reader(['en,id'], gpu=False)
         return self._easyocr_reader
 
     @property
@@ -33,7 +33,7 @@ class OCREngine:
         if self._paddleocr_reader is None:
             self._paddleocr_reader = PaddleOCR(
                 use_angle_cls=True,
-                lang='en',
+                lang='en,id',
                 use_gpu=False,
                 show_log=False,
             )
