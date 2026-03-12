@@ -83,3 +83,29 @@ class OCRWithMetricsResponse(BaseModel):
                 "wer": 0.12,
             }
         }
+
+
+class OCRTestResponse(BaseModel):
+    """Response model for testing individual OCR engines directly"""
+    filename: str
+    ocr_engine: str
+    extracted_text: str
+    ocr_confidence: float
+    runtime_seconds: float
+    total_blocks: int
+    cer: float
+    wer: float
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "filename": "resume.pdf",
+                "ocr_engine": "Tesseract",
+                "extracted_text": "John Doe\nSoftware Engineer\n...",
+                "ocr_confidence": 0.88,
+                "runtime_seconds": 1.52,
+                "total_blocks": 12,
+                "cer": 0.07,
+                "wer": 0.15,
+            }
+        }

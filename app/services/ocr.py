@@ -2,10 +2,16 @@ import time
 import numpy as np
 import cv2
 import easyocr
+import pytesseract
 from paddleocr import PaddleOCR
 from pathlib import Path
 from pdf2image import convert_from_path
 from PIL import Image
+import platform
+
+# Set Tesseract path for Windows
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
 class OCREngine:
@@ -24,7 +30,7 @@ class OCREngine:
     def easyocr_reader(self):
         """Lazy load EasyOCR"""
         if self._easyocr_reader is None:
-            self._easyocr_reader = easyocr.Reader(['en,id'], gpu=False)
+            self._easyocr_reader = easyocr.Reader(['en'], gpu=True)
         return self._easyocr_reader
 
     @property
@@ -33,8 +39,8 @@ class OCREngine:
         if self._paddleocr_reader is None:
             self._paddleocr_reader = PaddleOCR(
                 use_angle_cls=True,
-                lang='en,id',
-                use_gpu=False,
+                lang='en',
+                use_gpu=True,
                 show_log=False,
             )
         return self._paddleocr_reader
@@ -111,6 +117,39 @@ class OCREngine:
             "confidence": round(avg_confidence, 4),
             "runtime": round(runtime, 4),
             "engine": "PaddleOCR",
+            "total_blocks": len(texts),
+        }
+
+    def read_with_tesseract(self, file_path: str) -> dict:
+        """
+        Read CV text using Tesseract OCR.
+        Returns extracted text, confidence, and runtime.
+        """
+        image = self._load_image(file_path)
+
+        start_time = time.time()
+        # Get detailed data for confidence scores
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+        runtime = time.time() - start_time
+
+        # Extract text and confidence from words with confidence > -1
+        texts = []
+        confidences = []
+        for i, conf in enumerate(data["conf"]):
+            if int(conf) > -1:
+                word = data["text"][i].strip()
+                if word:
+                    texts.append(word)
+                    confidences.append(float(conf) / 100.0)
+
+        extracted_text = " ".join(texts)
+        avg_confidence = float(np.mean(confidences)) if confidences else 0.0
+
+        return {
+            "text": extracted_text,
+            "confidence": round(avg_confidence, 4),
+            "runtime": round(runtime, 4),
+            "engine": "Tesseract",
             "total_blocks": len(texts),
         }
 
