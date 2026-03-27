@@ -3,7 +3,13 @@ import numpy as np
 from pathlib import Path
 from pdf2image import convert_from_path
 from PIL import Image
+import importlib
 from app.schemas.cv import ClassificationResponse
+
+try:
+    importlib.import_module("pillow_avif")  # Registers AVIF support in Pillow
+except ModuleNotFoundError:
+    pass
 
 
 class CVClassifier:
@@ -25,10 +31,8 @@ class CVClassifier:
                 return cv2.cvtColor(np.array(images[0]), cv2.COLOR_RGB2BGR)
             raise ValueError("Could not convert PDF to image")
         else:
-            image = cv2.imread(str(file_path))
-            if image is None:
-                raise ValueError(f"Could not load image from {file_path}")
-            return image
+            image = Image.open(file_path).convert('RGB')
+            return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
     def _analyze_colors(self, image: np.ndarray) -> dict:
         """Analyze color complexity of the CV"""

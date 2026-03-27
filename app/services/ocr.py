@@ -8,6 +8,12 @@ from pathlib import Path
 from pdf2image import convert_from_path
 from PIL import Image
 import platform
+import importlib
+
+try:
+    importlib.import_module("pillow_avif")  # Registers AVIF support in Pillow
+except ModuleNotFoundError:
+    pass
 
 # Set Tesseract path for Windows
 if platform.system() == "Windows":

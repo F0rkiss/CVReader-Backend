@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Path("uploads")
     
     # Supported file types
-    ALLOWED_EXTENSIONS: list = [".pdf", ".png", ".jpg", ".jpeg"]
+    ALLOWED_EXTENSIONS: list = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".avif", ".av1"]
     
     class Config:
         env_file = ".env"

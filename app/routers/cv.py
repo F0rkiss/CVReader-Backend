@@ -18,7 +18,7 @@ async def classify_cv(file: UploadFile = File(...)):
     """
     Classify a CV as ATS or Creative.
 
-    - **file**: CV file (PDF, PNG, JPG, JPEG)
+    - **file**: CV file (PDF, PNG, JPG, JPEG, WebP, AVIF)
 
     Returns classification result with confidence score.
     """
@@ -46,7 +46,7 @@ async def read_cv(file: UploadFile = File(...)):
     """
     Classify and read a CV using the appropriate OCR engine.
 
-    - **file**: CV file (PDF, PNG, JPG, JPEG)
+    - **file**: CV file (PDF, PNG, JPG, JPEG, WebP, AVIF)
     - ATS CVs → EasyOCR
     - Creative CVs → PaddleOCR
 
@@ -92,7 +92,7 @@ async def read_cv_with_metrics(
     """
     Classify, read a CV, and calculate CER/WER against ground truth text.
 
-    - **file**: CV file (PDF, PNG, JPG, JPEG)
+    - **file**: CV file (PDF, PNG, JPG, JPEG, WebP, AVIF)
     - **ground_truth**: The expected/correct text content of the CV
 
     Returns extracted text, CER, WER, and runtime.
@@ -143,7 +143,7 @@ async def test_tesseract(
     """
     Test Tesseract OCR directly on a CV file.
 
-    - **file**: CV file (PDF, PNG, JPG, JPEG)
+    - **file**: CV file (PDF, PNG, JPG, JPEG, WebP, AVIF)
     - **ground_truth**: The expected/correct text content of the CV
 
     Returns extracted text, CER, WER, and runtime.
@@ -186,7 +186,7 @@ async def test_easyocr(
     """
     Test EasyOCR directly on a CV file.
 
-    - **file**: CV file (PDF, PNG, JPG, JPEG)
+    - **file**: CV file (PDF, PNG, JPG, JPEG, WebP, AVIF)
     - **ground_truth**: The expected/correct text content of the CV
 
     Returns extracted text, CER, WER, and runtime.
@@ -229,7 +229,7 @@ async def test_paddleocr(
     """
     Test PaddleOCR directly on a CV file.
 
-    - **file**: CV file (PDF, PNG, JPG, JPEG)
+    - **file**: CV file (PDF, PNG, JPG, JPEG, WebP, AVIF)
     - **ground_truth**: The expected/correct text content of the CV
 
     Returns extracted text, CER, WER, and runtime.
