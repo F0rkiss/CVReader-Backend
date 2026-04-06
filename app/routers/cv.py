@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from app.schemas.cv import ClassificationResponse, OCRResponse, OCRWithMetricsResponse, OCRTestResponse
-from app.services.classifier import CVClassifier
 from app.services.ocr import OCREngine
+from app.services.classifier import CVClassifier
 from app.services.metrics import calculate_cer, calculate_wer
 from app.utils.file_handler import save_upload_file, cleanup_file
 from app.config import settings

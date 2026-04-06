@@ -1,8 +1,8 @@
 import time
 import numpy as np
 import cv2
-import easyocr
 import pytesseract
+import easyocr
 from paddleocr import PaddleOCR
 from pathlib import Path
 from pdf2image import convert_from_path
@@ -31,6 +31,7 @@ class OCREngine:
         # Lazy loading - only initialize when first needed
         self._easyocr_reader = None
         self._paddleocr_reader = None
+        self._easyocr_error = None
 
     @property
     def easyocr_reader(self):
@@ -172,5 +173,9 @@ class OCREngine:
         """
         if cv_type == "Creative":
             return self.read_with_paddleocr(file_path)
-        else:
+
+        # ATS default is EasyOCR, but fallback to PaddleOCR if EasyOCR/Torch fails to load.
+        try:
             return self.read_with_easyocr(file_path)
+        except Exception:
+            return self.read_with_paddleocr(file_path)
