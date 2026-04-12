@@ -35,6 +35,8 @@ class OCRResponse(BaseModel):
     runtime_seconds: float
     total_blocks: int
     metrics: Optional[dict] = None
+    preprocessing_metadata: Optional[dict[str, bool]] = None
+    # preprocessed_image_png_base64: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -67,6 +69,8 @@ class OCRWithMetricsResponse(BaseModel):
     total_blocks: int
     cer: float
     wer: float
+    preprocessing_metadata: Optional[dict[str, bool]] = None
+    # preprocessed_image_png_base64: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -95,6 +99,8 @@ class OCRTestResponse(BaseModel):
     total_blocks: int
     cer: float
     wer: float
+    preprocessing_metadata: Optional[dict[str, bool]] = None
+    # preprocessed_image_png_base64: Optional[str] = None
 
     class Config:
         json_schema_extra = {

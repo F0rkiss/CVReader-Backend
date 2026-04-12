@@ -2,11 +2,11 @@ import importlib
 from pathlib import Path
 
 import numpy as np
-from paddleocr import PaddleOCR
 from pdf2image import convert_from_path
 from PIL import Image
 
 from app.schemas.cv import ClassificationResponse
+from app.services.pdf_extraction import PDFTextLayout, extract_pdf_text_layout
 
 try:
     importlib.import_module("pillow_avif")
@@ -18,31 +18,123 @@ class CVClassifier:
     """Classify CVs as ATS or Creative using PaddleOCR layout signals."""
 
     def __init__(self):
-        self._ocr = PaddleOCR(
-            use_angle_cls=True,
-            lang="en",
-            use_gpu=True,
-            show_log=False,
-        )
+        self._ocr = None
+        self._ocr_import_error: Exception | None = None
+
+    @property
+    def ocr(self):
+        if self._ocr is None:
+            try:
+                paddleocr_module = importlib.import_module("paddleocr")
+                paddleocr_cls = paddleocr_module.PaddleOCR
+                self._ocr = paddleocr_cls(
+                    use_angle_cls=True,
+                    lang="en",
+                    use_gpu=True,
+                    show_log=False,
+                )
+            except Exception as exc:
+                self._ocr_import_error = exc
+                raise RuntimeError(
+                    "PaddleOCR is unavailable in this environment."
+                ) from exc
+        return self._ocr
 
     def _load_image(self, file_path: str) -> np.ndarray:
         """Load image from path (supports PDF and image formats)."""
         file = Path(file_path)
 
         if file.suffix.lower() == ".pdf":
-            pages = convert_from_path(str(file), first_page=1, last_page=1)
+            pages = convert_from_path(
+                str(file),
+                first_page=1,
+                last_page=1,
+                dpi=200,
+            )
             if not pages:
                 raise ValueError("Could not convert PDF to image")
             return np.array(pages[0].convert("RGB"))
 
         return np.array(Image.open(file).convert("RGB"))
 
-    def classify(self, file_path: str) -> ClassificationResponse:
-        """Classify a CV using text block distribution from PaddleOCR output."""
+    def _classify_from_pdf_layout(
+        self,
+        *,
+        filename: str,
+        layout: PDFTextLayout,
+    ) -> ClassificationResponse:
+        width = float(layout.page_width)
+        x_centers = layout.line_x_centers
+
+        total_blocks = len(x_centers)
+        left_blocks = sum(1 for x in x_centers if x < 0.45 * width)
+        right_blocks = sum(1 for x in x_centers if x > 0.55 * width)
+        has_multiple_columns = (
+            left_blocks > 0.2 * total_blocks
+            and right_blocks > 0.2 * total_blocks
+        )
+
+        creative_score = 0.0
+        if has_multiple_columns:
+            creative_score += 0.6
+        if total_blocks > 35:
+            creative_score += 0.2
+
+        cv_type = "Creative" if creative_score >= 0.6 else "ATS"
+        confidence = min(0.95, 0.55 + 0.4 * abs(creative_score - 0.6))
+
+        return ClassificationResponse(
+            filename=filename,
+            cv_type=cv_type,
+            confidence=round(confidence, 2),
+            details={
+                "source": "pdf_text",
+                "total_blocks": total_blocks,
+                "avg_ocr_confidence": None,
+                "has_multiple_columns": has_multiple_columns,
+                "left_blocks": left_blocks,
+                "right_blocks": right_blocks,
+                "creative_score": round(creative_score, 2),
+            },
+        )
+
+    def classify(
+        self,
+        file_path: str,
+        pdf_layout: PDFTextLayout | None = None,
+    ) -> ClassificationResponse:
+        """Classify a CV using PDF layout when possible, otherwise PaddleOCR."""
+        path = Path(file_path)
+
+        # Fast path: for text-based PDFs, avoid rendering + OCR entirely.
+        if path.suffix.lower() == ".pdf":
+            layout = (
+                pdf_layout
+                if pdf_layout is not None
+                else extract_pdf_text_layout(str(path), max_pages=1)
+            )
+            if layout is not None and layout.total_lines > 0:
+                return self._classify_from_pdf_layout(
+                    filename=path.name,
+                    layout=layout,
+                )
+
         image = self._load_image(file_path)
         _, width = image.shape[:2]
 
-        results = self._ocr.ocr(image, cls=True)
+        try:
+            results = self.ocr.ocr(image, cls=True)
+        except Exception:
+            return ClassificationResponse(
+                filename=Path(file_path).name,
+                cv_type="ATS",
+                confidence=0.5,
+                details={
+                    "reason": "paddle_unavailable",
+                    "total_blocks": 0,
+                },
+            )
+
         lines = results[0] if results and results[0] else []
 
         if not lines:

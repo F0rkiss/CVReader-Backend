@@ -15,10 +15,14 @@ async def save_upload_file(upload_file: UploadFile) -> str:
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = settings.UPLOAD_DIR / unique_filename
     
-    # Save file
-    content = await upload_file.read()
+    # Save file (streaming to avoid loading large PDFs into memory)
+    chunk_size = 1024 * 1024  # 1MB
     with open(file_path, "wb") as f:
-        f.write(content)
+        while True:
+            chunk = await upload_file.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
     
     return str(file_path)
 
