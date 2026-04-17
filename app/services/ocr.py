@@ -11,7 +11,7 @@ import platform
 import importlib
 
 from app.services.preprocessing import preprocess_for_ocr_image
-from app.services.pdf_extraction import PDFTextLayout, extract_pdf_text_layout
+from app.utils.poppler import resolve_poppler_path
 
 try:
     importlib.import_module("pillow_avif")
@@ -35,6 +35,7 @@ class OCREngine:
         self._paddleocr_reader = None
         self._easyocr_import_error: Exception | None = None
         self._paddleocr_import_error: Exception | None = None
+        self._poppler_path = resolve_poppler_path()
 
     @property
     def easyocr_reader(self):
@@ -78,6 +79,7 @@ class OCREngine:
                 first_page=1,
                 last_page=1,
                 dpi=200,
+                poppler_path=self._poppler_path,
             )
             if images:
                 return np.array(images[0].convert("RGB"))
@@ -202,66 +204,6 @@ class OCREngine:
             + (1.0 - gibberish_penalty) * 0.15
         )
         return score
-
-    def _try_read_pdf_text(
-        self,
-        file_path: str,
-        *,
-        include_preprocessed_image: bool,
-        pdf_layout: PDFTextLayout | None = None,
-        pdf_layout_runtime: float | None = None,
-    ) -> dict | None:
-        path = Path(file_path)
-        if path.suffix.lower() != ".pdf":
-            return None
-
-        if pdf_layout is None:
-            start_time = time.time()
-            layout = extract_pdf_text_layout(str(path), max_pages=1)
-            runtime = time.time() - start_time
-        else:
-            layout = pdf_layout
-            runtime = pdf_layout_runtime if pdf_layout_runtime is not None else 0.0
-
-        if layout is None:
-            return None
-
-        text = str(layout.text or "").strip()
-        quality_text = self._clean_text_for_quality(text)
-
-        if len(quality_text) < 40:
-            return None
-
-        if sum(1 for ch in quality_text if ch.isalnum()) < 20:
-            return None
-
-        if self._gibberish_ratio(quality_text) > 0.25:
-            return None
-
-        result: dict = {
-            "text": text,
-            "confidence": 0.99,
-            "runtime": round(runtime, 4),
-            "engine": "PDFText",
-            "total_blocks": int(layout.total_lines),
-            "fallback_used": False,
-            "primary_engine": "PDFText",
-            "preprocessing_metadata": {
-                "resized": False,
-                "grayscale": False,
-                "contrast_enhanced": False,
-            },
-        }
-
-        if include_preprocessed_image:
-            image = self._load_image(file_path)
-            preprocess_data = self._preprocess_image_for_ocr(image)
-            result["preprocessing_metadata"] = preprocess_data["preprocessing_metadata"]
-            result["preprocessed_image_png_base64"] = self._encode_png_base64(
-                preprocess_data["preprocessed_image"]
-            )
-
-        return result
 
     def _read_easyocr_from_image(self, ocr_image: np.ndarray) -> dict:
         start_time = time.time()
@@ -393,23 +335,12 @@ class OCREngine:
         file_path: str,
         cv_type: str,
         include_preprocessed_image: bool = False,
-        pdf_layout: PDFTextLayout | None = None,
-        pdf_layout_runtime: float | None = None,
     ) -> dict:
         """
         Main website route:
         - ATS => EasyOCR first, fallback to PaddleOCR if quality is bad
         - Creative => PaddleOCR first, fallback to EasyOCR if quality is bad
         """
-        pdf_text = self._try_read_pdf_text(
-            file_path,
-            include_preprocessed_image=include_preprocessed_image,
-            pdf_layout=pdf_layout,
-            pdf_layout_runtime=pdf_layout_runtime,
-        )
-        if pdf_text is not None:
-            return pdf_text
-
         # Load + preprocess once; reuse for primary/fallback to avoid re-rendering PDFs.
         image = self._load_image(file_path)
         preprocess_data = self._preprocess_image_for_ocr(image)

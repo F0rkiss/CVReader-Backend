@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "CV Reader API"
     DEBUG: bool = True
     UPLOAD_DIR: Path = Path("uploads")
+    POPPLER_PATH: Path | None = None
 
     # Supported file types
     ALLOWED_EXTENSIONS: list[str] = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".avif"]
