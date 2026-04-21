@@ -1,14 +1,19 @@
 import time
 import base64
 import re
+import shutil
 import numpy as np
 import cv2
-import pytesseract
 from pathlib import Path
 from pdf2image import convert_from_path
 from PIL import Image
 import platform
 import importlib
+
+try:
+    import pytesseract
+except ModuleNotFoundError:
+    pytesseract = None
 
 from app.services.preprocessing import preprocess_for_ocr_image
 from app.utils.poppler import resolve_poppler_path
@@ -18,8 +23,10 @@ try:
 except ModuleNotFoundError:
     pass
 
-if platform.system() == "Windows":
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if platform.system() == "Windows" and pytesseract is not None:
+    default_tesseract_path = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if default_tesseract_path.exists():
+        pytesseract.pytesseract.tesseract_cmd = str(default_tesseract_path)
 
 
 class OCREngine:
@@ -27,7 +34,7 @@ class OCREngine:
     Website logic:
     - ATS -> EasyOCR
     - Creative -> PaddleOCR
-    - fallback to the other engine if the chosen result is clearly bad
+    - fallback to an alternative only when needed (Creative path)
     """
 
     def __init__(self):
@@ -35,6 +42,7 @@ class OCREngine:
         self._paddleocr_reader = None
         self._easyocr_import_error: Exception | None = None
         self._paddleocr_import_error: Exception | None = None
+        self._easyocr_runtime_mode = "unknown"
         self._poppler_path = resolve_poppler_path()
 
     @property
@@ -42,13 +50,43 @@ class OCREngine:
         if self._easyocr_reader is None:
             try:
                 easyocr_module = importlib.import_module("easyocr")
-                self._easyocr_reader = easyocr_module.Reader(["en"], gpu=True)
-            except Exception as exc:
+            except ModuleNotFoundError as exc:
                 self._easyocr_import_error = exc
                 raise RuntimeError(
-                    "EasyOCR is unavailable in this environment. "
-                    "Install a compatible torch/easyocr build or use PaddleOCR/Tesseract."
+                    "EasyOCR is not installed. Install dependencies from requirements.txt "
+                    "or run: pip install easyocr"
                 ) from exc
+
+            use_gpu = False
+            try:
+                torch_module = importlib.import_module("torch")
+                cuda = getattr(torch_module, "cuda", None)
+                use_gpu = bool(cuda and cuda.is_available())
+            except Exception as exc:
+                self._easyocr_import_error = exc
+                use_gpu = False
+
+            try:
+                self._easyocr_reader = easyocr_module.Reader(["en"], gpu=use_gpu)
+                self._easyocr_runtime_mode = "gpu" if use_gpu else "cpu"
+            except Exception as exc:
+                if use_gpu:
+                    # Retry on CPU when CUDA initialization fails.
+                    try:
+                        self._easyocr_reader = easyocr_module.Reader(["en"], gpu=False)
+                        self._easyocr_runtime_mode = "cpu"
+                    except Exception as cpu_exc:
+                        self._easyocr_import_error = cpu_exc
+                        raise RuntimeError(
+                            "EasyOCR failed to initialize on both GPU and CPU. "
+                            "Reinstall easyocr/torch and retry."
+                        ) from cpu_exc
+                else:
+                    self._easyocr_import_error = exc
+                    raise RuntimeError(
+                        "EasyOCR failed to initialize. "
+                        "Ensure easyocr and torch are installed correctly."
+                    ) from exc
         return self._easyocr_reader
 
     @property
@@ -206,8 +244,13 @@ class OCREngine:
         return score
 
     def _read_easyocr_from_image(self, ocr_image: np.ndarray) -> dict:
+        ocr_ready = np.ascontiguousarray(ocr_image)
+        if ocr_ready.dtype != np.uint8:
+            normalized = cv2.normalize(ocr_ready, None, 0, 255, cv2.NORM_MINMAX)
+            ocr_ready = normalized.astype(np.uint8)
+
         start_time = time.time()
-        results = self.easyocr_reader.readtext(ocr_image, detail=1, paragraph=False)
+        results = self.easyocr_reader.readtext(ocr_ready, detail=1, paragraph=False)
         runtime = time.time() - start_time
 
         texts = []
@@ -261,11 +304,24 @@ class OCREngine:
         }
 
     def _read_tesseract_from_image(self, ocr_image: np.ndarray) -> dict:
+        if pytesseract is None:
+            raise RuntimeError("pytesseract is not installed. Run: pip install pytesseract")
+
+        configured_cmd = str(getattr(pytesseract.pytesseract, "tesseract_cmd", "")).strip()
+        has_configured_cmd = bool(configured_cmd and Path(configured_cmd).exists())
+        has_path_binary = shutil.which("tesseract") is not None
+
+        if not (has_configured_cmd or has_path_binary):
+            raise RuntimeError("Tesseract is not installed or not available in PATH.")
+
         start_time = time.time()
-        data = pytesseract.image_to_data(
-            ocr_image,
-            output_type=pytesseract.Output.DICT,
-        )
+        try:
+            data = pytesseract.image_to_data(
+                ocr_image,
+                output_type=pytesseract.Output.DICT,
+            )
+        except Exception as exc:
+            raise RuntimeError("Tesseract is not installed or not available in PATH.") from exc
         runtime = time.time() - start_time
 
         texts = []
@@ -338,7 +394,7 @@ class OCREngine:
     ) -> dict:
         """
         Main website route:
-        - ATS => EasyOCR first, fallback to PaddleOCR if quality is bad
+        - ATS => EasyOCR only
         - Creative => PaddleOCR first, fallback to EasyOCR if quality is bad
         """
         # Load + preprocess once; reuse for primary/fallback to avoid re-rendering PDFs.
@@ -378,11 +434,26 @@ class OCREngine:
             return primary
 
         primary_engine = "EasyOCR"
+        ats_errors: list[str] = []
+        used_original_image_for_easyocr = False
+
         try:
             primary = self._read_easyocr_from_image(ocr_image)
-        except Exception:
-            primary = self._read_paddleocr_from_image(ocr_image)
-            primary_engine = "PaddleOCR"
+        except Exception as exc:
+            ats_errors.append(f"preprocessed_image_error={exc}")
+            try:
+                primary = self._read_easyocr_from_image(image)
+                used_original_image_for_easyocr = True
+            except Exception as raw_exc:
+                ats_errors.append(f"original_image_error={raw_exc}")
+                init_error = str(self._easyocr_import_error) if self._easyocr_import_error else None
+
+                detail = "; ".join(ats_errors)
+                if init_error:
+                    detail = f"{detail}; init_error={init_error}"
+                detail = f"{detail}; runtime_mode={self._easyocr_runtime_mode}"
+
+                raise RuntimeError(f"EasyOCR failed for ATS CV: {detail}") from raw_exc
 
         primary = self._attach_preprocessing_payload(
             primary,
@@ -390,21 +461,10 @@ class OCREngine:
             include_preprocessed_image,
         )
 
-        if self._looks_like_bad_ocr(primary):
-            try:
-                fallback = self._read_paddleocr_from_image(ocr_image)
-                fallback = self._attach_preprocessing_payload(
-                    fallback,
-                    preprocess_data,
-                    include_preprocessed_image,
-                )
-                if self._score_result(fallback) > self._score_result(primary):
-                    fallback["fallback_used"] = True
-                    fallback["primary_engine"] = primary_engine
-                    return fallback
-            except Exception:
-                pass
-
         primary["fallback_used"] = False
         primary["primary_engine"] = primary_engine
+        primary["easyocr_runtime_mode"] = self._easyocr_runtime_mode
+        primary["easyocr_input_variant"] = (
+            "original_image" if used_original_image_for_easyocr else "preprocessed_image"
+        )
         return primary

@@ -59,11 +59,37 @@ class CVClassifier:
 
         return np.array(Image.open(file).convert("RGB"))
 
+    def _preload_torch_runtime(self) -> None:
+        """Preload torch to avoid Paddle->Torch DLL order conflicts on Windows."""
+        try:
+            importlib.import_module("torch")
+        except Exception:
+            # Keep classification working even when torch is unavailable.
+            pass
+
+    def _apply_confidence_threshold(self, response: ClassificationResponse) -> ClassificationResponse:
+        """Reverse classification if confidence is below 0.68."""
+        if response.confidence < 0.68:
+            # Flip the cv_type
+            flipped_type = "ATS" if response.cv_type == "Creative" else "Creative"
+            return ClassificationResponse(
+                filename=response.filename,
+                cv_type=flipped_type,
+                confidence=response.confidence,
+                details={
+                    **response.details,
+                    "flipped": True,
+                },
+            )
+        return response
+
     def classify(
         self,
         file_path: str,
     ) -> ClassificationResponse:
         """Classify a CV as ATS/Creative using OCR layout signals."""
+        self._preload_torch_runtime()
+
         image = self._load_image(file_path)
         _, width = image.shape[:2]
 
@@ -122,10 +148,12 @@ class CVClassifier:
         if total_blocks > 35:
             creative_score += 0.2
 
-        cv_type = "Creative" if creative_score >= 0.6 else "ATS"
-        confidence = min(0.95, 0.55 + 0.4 * abs(creative_score - 0.6))
+        cv_type = "Creative" if creative_score >= 0.7 else "ATS"
+        decision_boundary = 0.7
+        distance_from_boundary = abs(creative_score - decision_boundary)
+        confidence = min(0.95, 0.5 + (0.45 * (distance_from_boundary / decision_boundary)))
 
-        return ClassificationResponse(
+        result = ClassificationResponse(
             filename=Path(file_path).name,
             cv_type=cv_type,
             confidence=round(confidence, 2),
@@ -138,3 +166,4 @@ class CVClassifier:
                 "creative_score": round(creative_score, 2),
             },
         )
+        return self._apply_confidence_threshold(result)
