@@ -9,6 +9,7 @@ from pdf2image import convert_from_path
 from PIL import Image
 import platform
 import importlib
+import logging
 
 try:
     import pytesseract
@@ -17,6 +18,8 @@ except ModuleNotFoundError:
 
 from app.services.preprocessing import preprocess_for_ocr_image
 from app.utils.poppler import resolve_poppler_path
+
+logger = logging.getLogger(__name__)
 
 try:
     importlib.import_module("pillow_avif")
@@ -154,6 +157,7 @@ class OCREngine:
             }
 
         except Exception:
+            logger.warning("Preprocessing failed; using the original image", exc_info=True)
             return {
                 "ocr_image": image,
                 "preprocessed_image": image,
@@ -406,6 +410,7 @@ class OCREngine:
             try:
                 primary = self._read_paddleocr_from_image(ocr_image)
             except Exception:
+                logger.warning("PaddleOCR failed for Creative CV; using EasyOCR", exc_info=True)
                 primary = self._read_easyocr_from_image(ocr_image)
 
             primary = self._attach_preprocessing_payload(
@@ -427,7 +432,7 @@ class OCREngine:
                         fallback["primary_engine"] = "PaddleOCR"
                         return fallback
                 except Exception:
-                    pass
+                    logger.warning("EasyOCR fallback failed; keeping PaddleOCR result", exc_info=True)
 
             primary["fallback_used"] = False
             primary["primary_engine"] = "PaddleOCR"

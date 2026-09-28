@@ -1,4 +1,5 @@
 import importlib
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,8 @@ from PIL import Image
 
 from app.schemas.cv import ClassificationResponse
 from app.utils.poppler import resolve_poppler_path
+
+logger = logging.getLogger(__name__)
 
 try:
     importlib.import_module("pillow_avif")
@@ -96,6 +99,10 @@ class CVClassifier:
         try:
             results = self.ocr.ocr(image, cls=True)
         except Exception:
+            logger.warning(
+                "PaddleOCR unavailable; defaulting classification to ATS",
+                exc_info=True,
+            )
             return ClassificationResponse(
                 filename=Path(file_path).name,
                 cv_type="ATS",

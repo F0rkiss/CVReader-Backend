@@ -1,3 +1,9 @@
+try:
+    from rapidfuzz.distance import Levenshtein as _rf_levenshtein
+except ModuleNotFoundError:  # pragma: no cover
+    _rf_levenshtein = None
+
+
 def calculate_cer(reference: str, hypothesis: str) -> float:
     """
     Calculate Character Error Rate (CER).
@@ -46,27 +52,37 @@ def _levenshtein_distance(ref: list, hyp: list) -> int:
     """
     Calculate Levenshtein edit distance between two sequences.
     Works for both character lists and word lists.
+
+    Uses rapidfuzz (C implementation) when available, otherwise falls back
+    to the pure-Python version below.
     """
-    n = len(ref)
+    if _rf_levenshtein is not None:
+        return int(_rf_levenshtein.distance(ref, hyp))
+    return _levenshtein_distance_py(ref, hyp)
+
+
+def _levenshtein_distance_py(ref: list, hyp: list) -> int:
+    """
+    Pure-Python Levenshtein edit distance.
+
+    Keeps only two rows of the DP matrix, so memory is O(len(hyp))
+    instead of O(len(ref) * len(hyp)).
+    """
     m = len(hyp)
 
-    # Create distance matrix
-    dp = [[0] * (m + 1) for _ in range(n + 1)]
-
-    for i in range(n + 1):
-        dp[i][0] = i
-    for j in range(m + 1):
-        dp[0][j] = j
-
-    for i in range(1, n + 1):
+    prev = list(range(m + 1))
+    for i in range(1, len(ref) + 1):
+        curr = [i] + [0] * m
+        ref_item = ref[i - 1]
         for j in range(1, m + 1):
-            if ref[i - 1] == hyp[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
+            if ref_item == hyp[j - 1]:
+                curr[j] = prev[j - 1]
             else:
-                dp[i][j] = 1 + min(
-                    dp[i - 1][j],      # deletion
-                    dp[i][j - 1],      # insertion
-                    dp[i - 1][j - 1],  # substitution
+                curr[j] = 1 + min(
+                    prev[j],      # deletion
+                    curr[j - 1],  # insertion
+                    prev[j - 1],  # substitution
                 )
+        prev = curr
 
-    return dp[n][m]
+    return prev[m]

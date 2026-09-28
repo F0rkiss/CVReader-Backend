@@ -1,16 +1,58 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from app.schemas.cv import ClassificationResponse, OCRResponse, OCRWithMetricsResponse, OCRTestResponse
 from app.services.ocr import OCREngine
 from app.services.classifier import CVClassifier
 from app.services.metrics import calculate_cer, calculate_wer
 from app.utils.file_handler import save_upload_file, cleanup_file
 from app.config import settings
-from typing import Optional
+from typing import Callable, Optional, TypeVar
+import logging
 import os
+import threading
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 classifier = CVClassifier()
 ocr_engine = OCREngine()
+
+# OCR models are lazily initialised and not safe for concurrent inference,
+# so heavy work runs one request at a time in a worker thread. This keeps the
+# event loop free (e.g. /health stays responsive) while OCR is running.
+_inference_lock = threading.Lock()
+
+T = TypeVar("T")
+
+GroundTruth = Form(..., max_length=settings.MAX_GROUND_TRUTH_CHARS)
+
+
+def _validate_extension(file: UploadFile) -> None:
+    file_ext = os.path.splitext(file.filename or "")[1].lower()
+    if file_ext not in settings.ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
+        )
+
+
+def _resolve_include_flag(include_preprocessed_image: bool, alias: Optional[bool]) -> bool:
+    return alias if alias is not None else include_preprocessed_image
+
+
+def _locked(func: Callable[[], T]) -> T:
+    with _inference_lock:
+        return func()
+
+
+async def _run_inference(func: Callable[[], T]) -> T:
+    return await run_in_threadpool(_locked, func)
+
+
+def _internal_error(exc: Exception) -> HTTPException:
+    logger.exception("CV processing failed")
+    detail = str(exc) if settings.DEBUG else "Failed to process the CV. Check server logs for details."
+    return HTTPException(status_code=500, detail=detail)
 
 
 @router.post("/classify", response_model=ClassificationResponse)
@@ -22,21 +64,14 @@ async def classify_cv(file: UploadFile = File(...)):
 
     Returns classification result with confidence score.
     """
-    # Validate file extension
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
-        )
-
+    _validate_extension(file)
     file_path = await save_upload_file(file)
 
     try:
-        result = classifier.classify(file_path)
-        return result
+        classification = await _run_inference(lambda: classifier.classify(file_path))
+        return classification.model_copy(update={"filename": file.filename or ""})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
     finally:
         cleanup_file(file_path)
 
@@ -59,34 +94,24 @@ async def read_cv(
 
     Returns extracted text, OCR confidence, and runtime.
     """
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
-        )
-
+    _validate_extension(file)
     file_path = await save_upload_file(file)
+    include_flag = _resolve_include_flag(include_preprocessed_image, include_preprocessing_image_alias)
 
-    try:
-        include_preprocessed_image_flag = (
-            include_preprocessing_image_alias
-            if include_preprocessing_image_alias is not None
-            else include_preprocessed_image
-        )
-
-        # Step 1: Classify
+    def work():
         classification = classifier.classify(file_path)
-
-        # Step 2: Read with appropriate OCR engine
         ocr_result = ocr_engine.read(
             file_path,
             classification.cv_type,
-            include_preprocessed_image=include_preprocessed_image_flag,
+            include_preprocessed_image=include_flag,
         )
+        return classification, ocr_result
+
+    try:
+        classification, ocr_result = await _run_inference(work)
 
         return OCRResponse(
-            filename=classification.filename,
+            filename=file.filename or "",
             cv_type=classification.cv_type,
             classification_confidence=classification.confidence,
             ocr_engine=ocr_result["engine"],
@@ -95,10 +120,9 @@ async def read_cv(
             runtime_seconds=ocr_result["runtime"],
             total_blocks=ocr_result["total_blocks"],
             preprocessing_metadata=ocr_result.get("preprocessing_metadata"),
-            preprocessed_image_png_base64=ocr_result.get("preprocessed_image_png_base64"),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
     finally:
         cleanup_file(file_path)
 
@@ -106,7 +130,7 @@ async def read_cv(
 @router.post("/read-with-metrics", response_model=OCRWithMetricsResponse)
 async def read_cv_with_metrics(
     file: UploadFile = File(...),
-    ground_truth: str = Form(...),
+    ground_truth: str = GroundTruth,
     include_preprocessed_image: bool = Query(default=False),
     include_preprocessing_image_alias: Optional[bool] = Query(
         default=None,
@@ -121,38 +145,26 @@ async def read_cv_with_metrics(
 
     Returns extracted text, CER, WER, and runtime.
     """
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
-        )
-
+    _validate_extension(file)
     file_path = await save_upload_file(file)
+    include_flag = _resolve_include_flag(include_preprocessed_image, include_preprocessing_image_alias)
 
-    try:
-        include_preprocessed_image_flag = (
-            include_preprocessing_image_alias
-            if include_preprocessing_image_alias is not None
-            else include_preprocessed_image
-        )
-
-        # Step 1: Classify
+    def work():
         classification = classifier.classify(file_path)
-
-        # Step 2: Read with appropriate OCR engine
         ocr_result = ocr_engine.read(
             file_path,
             classification.cv_type,
-            include_preprocessed_image=include_preprocessed_image_flag,
+            include_preprocessed_image=include_flag,
         )
-
-        # Step 3: Calculate metrics
         cer = calculate_cer(ground_truth, ocr_result["text"])
         wer = calculate_wer(ground_truth, ocr_result["text"])
+        return classification, ocr_result, cer, wer
+
+    try:
+        classification, ocr_result, cer, wer = await _run_inference(work)
 
         return OCRWithMetricsResponse(
-            filename=classification.filename,
+            filename=file.filename or "",
             cv_type=classification.cv_type,
             classification_confidence=classification.confidence,
             ocr_engine=ocr_result["engine"],
@@ -163,10 +175,44 @@ async def read_cv_with_metrics(
             cer=cer,
             wer=wer,
             preprocessing_metadata=ocr_result.get("preprocessing_metadata"),
-            preprocessed_image_png_base64=ocr_result.get("preprocessed_image_png_base64"),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
+    finally:
+        cleanup_file(file_path)
+
+
+async def _run_engine_test(
+    file: UploadFile,
+    ground_truth: str,
+    include_flag: bool,
+    read_func: Callable[..., dict],
+) -> OCRTestResponse:
+    _validate_extension(file)
+    file_path = await save_upload_file(file)
+
+    def work():
+        ocr_result = read_func(file_path, include_preprocessed_image=include_flag)
+        cer = calculate_cer(ground_truth, ocr_result["text"])
+        wer = calculate_wer(ground_truth, ocr_result["text"])
+        return ocr_result, cer, wer
+
+    try:
+        ocr_result, cer, wer = await _run_inference(work)
+
+        return OCRTestResponse(
+            filename=file.filename or "",
+            ocr_engine=ocr_result["engine"],
+            extracted_text=ocr_result["text"],
+            ocr_confidence=ocr_result["confidence"],
+            runtime_seconds=ocr_result["runtime"],
+            total_blocks=ocr_result["total_blocks"],
+            cer=cer,
+            wer=wer,
+            preprocessing_metadata=ocr_result.get("preprocessing_metadata"),
+        )
+    except Exception as e:
+        raise _internal_error(e) from e
     finally:
         cleanup_file(file_path)
 
@@ -174,7 +220,7 @@ async def read_cv_with_metrics(
 @router.post("/test/tesseract", response_model=OCRTestResponse)
 async def test_tesseract(
     file: UploadFile = File(...),
-    ground_truth: str = Form(...),
+    ground_truth: str = GroundTruth,
     include_preprocessed_image: bool = Query(default=False),
     include_preprocessing_image_alias: Optional[bool] = Query(
         default=None,
@@ -189,51 +235,18 @@ async def test_tesseract(
 
     Returns extracted text, CER, WER, and runtime.
     """
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
-        )
-
-    file_path = await save_upload_file(file)
-
-    try:
-        include_preprocessed_image_flag = (
-            include_preprocessing_image_alias
-            if include_preprocessing_image_alias is not None
-            else include_preprocessed_image
-        )
-
-        ocr_result = ocr_engine.read_with_tesseract(
-            file_path,
-            include_preprocessed_image=include_preprocessed_image_flag,
-        )
-        cer = calculate_cer(ground_truth, ocr_result["text"])
-        wer = calculate_wer(ground_truth, ocr_result["text"])
-
-        return OCRTestResponse(
-            filename=file.filename,
-            ocr_engine=ocr_result["engine"],
-            extracted_text=ocr_result["text"],
-            ocr_confidence=ocr_result["confidence"],
-            runtime_seconds=ocr_result["runtime"],
-            total_blocks=ocr_result["total_blocks"],
-            cer=cer,
-            wer=wer,
-            preprocessing_metadata=ocr_result.get("preprocessing_metadata"),
-            preprocessed_image_png_base64=ocr_result.get("preprocessed_image_png_base64"),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cleanup_file(file_path)
+    return await _run_engine_test(
+        file,
+        ground_truth,
+        _resolve_include_flag(include_preprocessed_image, include_preprocessing_image_alias),
+        ocr_engine.read_with_tesseract,
+    )
 
 
 @router.post("/test/easyocr", response_model=OCRTestResponse)
 async def test_easyocr(
     file: UploadFile = File(...),
-    ground_truth: str = Form(...),
+    ground_truth: str = GroundTruth,
     include_preprocessed_image: bool = Query(default=False),
     include_preprocessing_image_alias: Optional[bool] = Query(
         default=None,
@@ -248,51 +261,18 @@ async def test_easyocr(
 
     Returns extracted text, CER, WER, and runtime.
     """
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
-        )
-
-    file_path = await save_upload_file(file)
-
-    try:
-        include_preprocessed_image_flag = (
-            include_preprocessing_image_alias
-            if include_preprocessing_image_alias is not None
-            else include_preprocessed_image
-        )
-
-        ocr_result = ocr_engine.read_with_easyocr(
-            file_path,
-            include_preprocessed_image=include_preprocessed_image_flag,
-        )
-        cer = calculate_cer(ground_truth, ocr_result["text"])
-        wer = calculate_wer(ground_truth, ocr_result["text"])
-
-        return OCRTestResponse(
-            filename=file.filename,
-            ocr_engine=ocr_result["engine"],
-            extracted_text=ocr_result["text"],
-            ocr_confidence=ocr_result["confidence"],
-            runtime_seconds=ocr_result["runtime"],
-            total_blocks=ocr_result["total_blocks"],
-            cer=cer,
-            wer=wer,
-            preprocessing_metadata=ocr_result.get("preprocessing_metadata"),
-            preprocessed_image_png_base64=ocr_result.get("preprocessed_image_png_base64"),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cleanup_file(file_path)
+    return await _run_engine_test(
+        file,
+        ground_truth,
+        _resolve_include_flag(include_preprocessed_image, include_preprocessing_image_alias),
+        ocr_engine.read_with_easyocr,
+    )
 
 
 @router.post("/test/paddleocr", response_model=OCRTestResponse)
 async def test_paddleocr(
     file: UploadFile = File(...),
-    ground_truth: str = Form(...),
+    ground_truth: str = GroundTruth,
     include_preprocessed_image: bool = Query(default=False),
     include_preprocessing_image_alias: Optional[bool] = Query(
         default=None,
@@ -307,42 +287,9 @@ async def test_paddleocr(
 
     Returns extracted text, CER, WER, and runtime.
     """
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type not allowed. Allowed: {settings.ALLOWED_EXTENSIONS}",
-        )
-
-    file_path = await save_upload_file(file)
-
-    try:
-        include_preprocessed_image_flag = (
-            include_preprocessing_image_alias
-            if include_preprocessing_image_alias is not None
-            else include_preprocessed_image
-        )
-
-        ocr_result = ocr_engine.read_with_paddleocr(
-            file_path,
-            include_preprocessed_image=include_preprocessed_image_flag,
-        )
-        cer = calculate_cer(ground_truth, ocr_result["text"])
-        wer = calculate_wer(ground_truth, ocr_result["text"])
-
-        return OCRTestResponse(
-            filename=file.filename,
-            ocr_engine=ocr_result["engine"],
-            extracted_text=ocr_result["text"],
-            ocr_confidence=ocr_result["confidence"],
-            runtime_seconds=ocr_result["runtime"],
-            total_blocks=ocr_result["total_blocks"],
-            cer=cer,
-            wer=wer,
-            preprocessing_metadata=ocr_result.get("preprocessing_metadata"),
-            preprocessed_image_png_base64=ocr_result.get("preprocessed_image_png_base64"),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cleanup_file(file_path)
+    return await _run_engine_test(
+        file,
+        ground_truth,
+        _resolve_include_flag(include_preprocessed_image, include_preprocessing_image_alias),
+        ocr_engine.read_with_paddleocr,
+    )

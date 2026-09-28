@@ -165,11 +165,14 @@ def _deskew_small_angle(image_gray: np.ndarray) -> tuple[np.ndarray, bool]:
     if foreground_ratio < 0.01 or foreground_ratio > 0.70:
         return image_gray, False
 
+    # OpenCV >= 4.5.1 reports minAreaRect angles in (0, 90]; older versions
+    # use [-90, 0). Normalise both conventions to (-45, 45]. Rotating by that
+    # angle (getRotationMatrix2D: positive = counter-clockwise) undoes the skew.
     angle = float(cv2.minAreaRect(points)[-1])
-    if angle < -45.0:
-        angle = -(90.0 + angle)
-    else:
-        angle = -angle
+    if angle > 45.0:
+        angle -= 90.0
+    elif angle <= -45.0:
+        angle += 90.0
 
     abs_angle = abs(angle)
     if abs_angle < _DESKEW_MIN_ABS_ANGLE_DEG or abs_angle > _DESKEW_MAX_ABS_ANGLE_DEG:

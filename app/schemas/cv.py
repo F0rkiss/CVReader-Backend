@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Literal, Optional
 
 
@@ -9,8 +9,8 @@ class ClassificationResponse(BaseModel):
     confidence: float
     details: dict
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "filename": "resume.pdf",
                 "cv_type": "ATS",
@@ -22,6 +22,7 @@ class ClassificationResponse(BaseModel):
                 },
             }
         }
+    )
 
 
 class OCRResponse(BaseModel):
@@ -38,8 +39,8 @@ class OCRResponse(BaseModel):
     preprocessing_metadata: Optional[dict[str, bool]] = None
     # preprocessed_image_png_base64: Optional[str] = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "filename": "resume.pdf",
                 "cv_type": "ATS",
@@ -55,6 +56,7 @@ class OCRResponse(BaseModel):
                 },
             }
         }
+    )
 
 
 class OCRWithMetricsResponse(BaseModel):
@@ -72,8 +74,8 @@ class OCRWithMetricsResponse(BaseModel):
     preprocessing_metadata: Optional[dict[str, bool]] = None
     # preprocessed_image_png_base64: Optional[str] = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "filename": "resume.pdf",
                 "cv_type": "ATS",
@@ -87,6 +89,7 @@ class OCRWithMetricsResponse(BaseModel):
                 "wer": 0.12,
             }
         }
+    )
 
 
 class OCRTestResponse(BaseModel):
@@ -102,8 +105,8 @@ class OCRTestResponse(BaseModel):
     preprocessing_metadata: Optional[dict[str, bool]] = None
     # preprocessed_image_png_base64: Optional[str] = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "filename": "resume.pdf",
                 "ocr_engine": "Tesseract",
@@ -115,3 +118,4 @@ class OCRTestResponse(BaseModel):
                 "wer": 0.15,
             }
         }
+    )
